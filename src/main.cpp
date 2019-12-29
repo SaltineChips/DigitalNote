@@ -24,6 +24,7 @@
 #include "masternodeman.h"
 #include "masternode-payments.h"
 #include "spork.h"
+#include "smessage.h"
 #include "util.h"
 
 #include <boost/algorithm/string/replace.hpp>
@@ -2629,11 +2630,12 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
         int64_t nDevopsPayment = 0;
         int64_t nProofOfIndexMasternode = 0;
         int64_t nProofOfIndexDevops = 0;
-        int64_t nMasterNodeChecksDelay = 30 * 60;
+        int64_t nMasterNodeChecksDelay = 45 * 60;
         int64_t nMasterNodeChecksEngageTime = 0;
         const CBlockIndex* pindexPrev = pindexBest->pprev;
         bool isProofOfStake = !IsProofOfWork();
         bool fBlockHasPayments = true;
+        std::string strVfyDevopsAddress;
         // Define primitives depending if PoW/PoS
         if (isProofOfStake) {
             nProofOfIndexMasternode = 2;
@@ -2667,6 +2669,9 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
         } else {
             nMasterNodeChecksEngageTime = nMasterNodeChecksDelayBaseTime + nMasterNodeChecksDelay;
         }
+        // Devops Address Set and Updates
+        strVfyDevopsAddress = "dHy3LZvqX5B2rAAoLiA7Y7rpvkLXKTkD18";
+        if(pindexBest->GetBlockTime() < nPaymentUpdate_2) { strVfyDevopsAddress = Params().DevOpsAddress(); }
         // Check PoW or PoS payments for current block
         for (unsigned int i=0; i < vtx[isProofOfStake].vout.size(); i++) {
             // Define values
@@ -2684,7 +2689,7 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
                 if (i == nProofOfIndexMasternode) {
                    if (mnodeman.IsPayeeAValidMasternode(rawPayee)) {
                        LogPrintf("CheckBlock() : PoS Recipient masternode address validity succesfully verified\n");
-                   } else if (addressOut.ToString() == Params().DevOpsAddress()) {
+                   } else if (addressOut.ToString() == strVfyDevopsAddress) {
                        LogPrintf("CheckBlock() : PoS Recipient masternode address validity succesfully verified\n");
                    } else {
                        if (nMasterNodeChecksEngageTime != 0) {
@@ -2707,11 +2712,20 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
                 }
                 // Check for PoS devops payment
                 if (i == nProofOfIndexDevops) {
-                   if (addressOut.ToString() == Params().DevOpsAddress()) {
+                   if (addressOut.ToString() == strVfyDevopsAddress) {
                        LogPrintf("CheckBlock() : PoS Recipient devops address validity succesfully verified\n");
                    } else {
                        LogPrintf("CheckBlock() : PoS Recipient devops address validity could not be verified\n");
-                       fBlockHasPayments = false;
+                       // Skip check during transition to new DevOps
+                       if (pindexBest->GetBlockTime() < nPaymentUpdate_3) {
+                           // Check legacy blocks for valid payment, only skip for Update_2
+                           if (pindexBest->GetBlockTime() < nPaymentUpdate_2) {
+                               fBlockHasPayments = false;
+                           }
+                       } else {
+                           // Re-enable enforcement post transition (Update_3)
+                           fBlockHasPayments = false;
+                       }
                    }
                    if (nIndexedDevopsPayment == nDevopsPayment) {
                        LogPrintf("CheckBlock() : PoS Recipient devops amount validity succesfully verified\n");
@@ -2736,7 +2750,7 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
                 if (i == nProofOfIndexMasternode) {
                    if (mnodeman.IsPayeeAValidMasternode(rawPayee)) {
                       LogPrintf("CheckBlock() : PoW Recipient masternode address validity succesfully verified\n");
-                   } else if (addressOut.ToString() == Params().DevOpsAddress()) {
+                   } else if (addressOut.ToString() == strVfyDevopsAddress) {
                       LogPrintf("CheckBlock() : PoW Recipient masternode address validity succesfully verified\n");
                    } else {
                       if (nMasterNodeChecksEngageTime != 0) {
@@ -2759,11 +2773,20 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
                 }
                 // Check for PoW devops payment
                 if (i == nProofOfIndexDevops) {
-                   if (addressOut.ToString() == Params().DevOpsAddress()) {
+                   if (addressOut.ToString() == strVfyDevopsAddress) {
                       LogPrintf("CheckBlock() : PoW Recipient devops address validity succesfully verified\n");
                    } else {
-                      LogPrintf("CheckBlock() : PoW Recipient devops address validity could not be verified\n");
-                      fBlockHasPayments = false;
+                       LogPrintf("CheckBlock() : PoW Recipient devops address validity could not be verified\n");
+                       // Skip check during transition to new DevOps
+                       if (pindexBest->GetBlockTime() < nPaymentUpdate_3) {
+                           // Check legacy blocks for valid payment, only skip for Update_2
+                           if (pindexBest->GetBlockTime() < nPaymentUpdate_2) {
+                               fBlockHasPayments = false;
+                           }
+                       } else {
+                           // Re-enable enforcement post transition (Update_3)
+                           fBlockHasPayments = false;
+                       }
                    }
                    if (nAmount == nDevopsPayment) {
                       LogPrintf("CheckBlock() : PoW Recipient devops amount validity succesfully verified\n");
@@ -4239,6 +4262,9 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
 
         ProcessBlock(pfrom, &block);
         if (block.nDoS) Misbehaving(pfrom->GetId(), block.nDoS);
+        if (fSecMsgEnabled) {
+            SecureMsgScanBlock(block);
+        }
     }
 
     // This asymmetric behavior for inbound and outbound connections was introduced
@@ -4389,6 +4415,9 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
 
     else
     {
+        if (fSecMsgEnabled) {
+            SecureMsgReceiveData(pfrom, strCommand, vRecv);
+        }
         mnodeman.ProcessMessage(pfrom, strCommand, vRecv);
         ProcessMessageMasternodePayments(pfrom, strCommand, vRecv);
         ProcessMessageInstantX(pfrom, strCommand, vRecv);
@@ -4786,6 +4815,10 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         }
         if (!vGetData.empty())
             pto->PushMessage("getdata", vGetData);
+
+        if (fSecMsgEnabled) {
+            SecureMsgSendData(pto, fSendTrickle); // should be in cs_main?
+        }
 
     }
     return true;

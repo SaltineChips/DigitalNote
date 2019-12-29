@@ -19,10 +19,10 @@
 #endif
 
 #ifdef USE_UPNP
-#include <miniupnpc-1.9/miniupnpc.h>
-#include <miniupnpc-1.9/miniwget.h>
-#include <miniupnpc-1.9/upnpcommands.h>
-#include <miniupnpc-1.9/upnperrors.h>
+#include <miniupnpc-2.1/miniupnpc.h>
+#include <miniupnpc-2.1/miniwget.h>
+#include <miniupnpc-2.1/upnpcommands.h>
+#include <miniupnpc-2.1/upnperrors.h>
 #endif
 
 #include <boost/filesystem.hpp>
@@ -945,20 +945,14 @@ void SocketSendData(CNode *pnode)
                 break;
             }
         } else {
-            if (nBytes < 0) {
-                // error
-                int nErr = WSAGetLastError();
-                if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
-                {
-                    LogPrintf("socket send error %d\n", nErr);
-                    IdleNodeCheck(pnode);
-                    break;
-                }
+            if (nBytes == 0) {
+              // couldn't send anything at all
+              LogPrintf("socket send error: data failure\n");
+              pnode->CloseSocketDisconnect();
+              break;
             }
 
-            // couldn't send anything at all
-            LogPrintf("socket send error: data failure\n");
-            IdleNodeCheck(pnode);
+            pnode->CloseSocketDisconnect();
             break;
         }
     }
@@ -1289,7 +1283,7 @@ void ThreadSocketHandler()
                     pnode->fDisconnect = true;
                     pnode->CloseSocketDisconnect();
                 }
-                // Ping timeout
+                // Ping timeout - TODO : Review function
                 else if (pnode->nPingNonceSent && pnode->nPingUsecStart + TIMEOUT_INTERVAL * 1000000 < GetTimeMicros())
                 {
                     LogPrintf("ping timeout: %fs\n", 0.000001 * (GetTimeMicros() - pnode->nPingUsecStart));
